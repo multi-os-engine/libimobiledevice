@@ -454,6 +454,19 @@ void instproxy_status_get_percent_complete(plist_t status, int *percent);
 plist_t instproxy_client_options_new(void);
 
 /**
+ * Add one new key:value pair to the given client_options.
+ *
+ * @param client_options The client options to modify.
+ * @param key Key
+ * @param value Value
+ *
+ * @note The key and value passed are expected to be strings, except for the
+ *       keys "ApplicationSINF", "iTunesMetadata", "ReturnAttributes" which are
+ *       expecting a plist_t node as value and "SkipUninstall" expects int.
+ */
+void instproxy_client_option_add(plist_t client_options, const char * key, const char * value);
+
+/**
  * Adds one or more new key:value pairs to the given client_options.
  *
  * @param client_options The client options to modify.

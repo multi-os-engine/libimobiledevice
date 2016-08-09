@@ -923,6 +923,11 @@ LIBIMOBILEDEVICE_API plist_t instproxy_client_options_new(void)
 	return plist_new_dict();
 }
 
+LIBIMOBILEDEVICE_API void instproxy_client_option_add(plist_t client_options, const char * key, const char * value)
+{
+    instproxy_client_options_add(client_options, key, value, 0);
+}
+
 LIBIMOBILEDEVICE_API void instproxy_client_options_add(plist_t client_options, ...)
 {
 	if (!client_options)

@@ -64,6 +64,7 @@ typedef struct {
 	enum idevice_event_type event; /**< The event type. */
 	const char *udid; /**< The device unique id. */
 	int conn_type; /**< The connection type. Currently only 1 for usbmuxd. */
+	const char *conn_subtype; /**< The connection subtype. For usbmuxd it can be USB or Network. */
 } idevice_event_t;
 
 /* event callback function prototype */
@@ -113,6 +114,19 @@ idevice_error_t idevice_event_unsubscribe(void);
 idevice_error_t idevice_get_device_list(char ***devices, int *count);
 
 /**
+ * Get a list of currently available devices which are connected .
+ *
+ * @param devices List of udids of devices that are currently available.
+ *   This list is terminated by a NULL pointer.
+ * @param count Number of devices found.
+ * @param conn_type The connection type to the device.
+ * @param conn_subtype The connection subtype to the device.
+ *
+ * @return IDEVICE_E_SUCCESS on success or an error value when an error occured.
+ */
+idevice_error_t idevice_get_device_list_with_connection(char ***devices, int *count, int conn_type, const char *conn_subtype);
+
+/**
  * Free a list of device udids.
  *
  * @param devices List of udids to free.
@@ -137,6 +151,23 @@ idevice_error_t idevice_device_list_free(char **devices);
  * @return IDEVICE_E_SUCCESS if ok, otherwise an error code.
  */
 idevice_error_t idevice_new(idevice_t *device, const char *udid);
+
+/**
+ * Creates an idevice_t structure for the device specified by udid,
+ *  if the device is available.
+ *
+ * @note The resulting idevice_t structure has to be freed with
+ * idevice_free() if it is no longer used.
+ *
+ * @param device Upon calling this function, a pointer to a location of type
+ *  idevice_t. On successful return, this location will be populated.
+ * @param udid The UDID to match.
+ * @param conn_type The connection type to the device.
+ * @param conn_subtype The connection subtype to the device.
+ *
+ * @return IDEVICE_E_SUCCESS if ok, otherwise an error code.
+ */
+idevice_error_t idevice_new_with_connection(idevice_t *device, const char *udid, int conn_type, const char *conn_subtype);
 
 /**
  * Cleans up an idevice structure, then frees the structure itself.

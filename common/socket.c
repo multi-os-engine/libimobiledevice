@@ -19,6 +19,8 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
  */
 
+#ifndef MOE
+
 #include <stdio.h>
 #include <stddef.h>
 #include <stdlib.h>
@@ -390,3 +392,5 @@ int socket_send(int fd, void *data, size_t length)
 {
 	return send(fd, data, length, 0);
 }
+
+#endif
