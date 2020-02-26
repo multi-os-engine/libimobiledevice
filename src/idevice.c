@@ -170,7 +170,6 @@ static void usbmux_event_cb(const usbmuxd_event_t *event, void *user_data)
 	ev.event = event->event;
 	ev.udid = event->device.udid;
 	ev.conn_type = CONNECTION_USBMUXD;
-	ev.conn_subtype = event->device.connection_type;
 
 	if (event_cb) {
 		event_cb(&ev, user_data);
@@ -230,44 +229,6 @@ LIBIMOBILEDEVICE_API idevice_error_t idevice_get_device_list(char ***devices, in
 	return IDEVICE_E_SUCCESS;
 }
 
-LIBIMOBILEDEVICE_API idevice_error_t idevice_get_device_list_with_connection(char ***devices, int *count, int conn_type, const char *conn_subtype)
-{
-	if (CONNECTION_USBMUXD == conn_type) {
-		usbmuxd_device_info_t *dev_list;
-
-		*devices = NULL;
-		*count = 0;
-
-		if (usbmuxd_get_device_list(&dev_list) < 0) {
-			debug_info("ERROR: usbmuxd is not running!", __func__);
-			return IDEVICE_E_NO_DEVICE;
-		}
-
-		char **newlist = NULL;
-		int i, newcount = 0;
-
-		for (i = 0; dev_list[i].handle > 0; i++) {
-			if (conn_subtype != NULL && strcmp(conn_subtype, dev_list[i].connection_type) != 0) {
-				continue;
-			}
-			newlist = realloc(*devices, sizeof(char*) * (newcount+1));
-			newlist[newcount++] = strdup(dev_list[i].udid);
-			*devices = newlist;
-		}
-		usbmuxd_device_list_free(&dev_list);
-
-		*count = newcount;
-		newlist = realloc(*devices, sizeof(char*) * (newcount+1));
-		newlist[newcount] = NULL;
-		*devices = newlist;
-
-		return IDEVICE_E_SUCCESS;
-	}
-	/* other connection types could follow here */
-
-	return IDEVICE_E_NO_DEVICE;
-}
-
 LIBIMOBILEDEVICE_API idevice_error_t idevice_device_list_free(char **devices)
 {
 	if (devices) {
@@ -298,34 +259,6 @@ LIBIMOBILEDEVICE_API idevice_error_t idevice_new(idevice_t * device, const char 
 		dev->version = 0;
 		*device = dev;
 		return IDEVICE_E_SUCCESS;
-	}
-	/* other connection types could follow here */
-
-	return IDEVICE_E_NO_DEVICE;
-}
-
-LIBIMOBILEDEVICE_API idevice_error_t idevice_new_with_connection(idevice_t * device, const char *udid, int conn_type, const char *conn_subtype)
-{
-	if (conn_type == CONNECTION_USBMUXD) {
-		usbmuxd_device_info_t *muxdevs;
-		int res = usbmuxd_get_device_list(&muxdevs);
-		if (res <= 0) {
-			return IDEVICE_E_NO_DEVICE;
-		}
-
-		for (int idx = 0; idx < res; ++idx) {
-			usbmuxd_device_info_t muxdev = muxdevs[idx];
-			if (strcasecmp(udid, muxdev.udid) == 0) {
-				if (conn_subtype == NULL || strcmp(conn_subtype, muxdev.connection_type) == 0) {
-					idevice_t dev = (idevice_t) malloc(sizeof(struct idevice_private));
-					dev->udid = strdup(muxdev.udid);
-					dev->conn_type = CONNECTION_USBMUXD;
-					dev->conn_data = (void*)(long)muxdev.handle;
-					*device = dev;
-					return IDEVICE_E_SUCCESS;
-				}
-			}
-		}
 	}
 	/* other connection types could follow here */
 
