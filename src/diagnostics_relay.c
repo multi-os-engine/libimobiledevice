@@ -18,6 +18,10 @@
  * License along with this library; if not, write to the Free Software
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
  */
+
+#ifdef HAVE_CONFIG_H
+#include <config.h>
+#endif
 #include <string.h>
 #include <stdlib.h>
 #include "diagnostics_relay.h"
@@ -36,7 +40,7 @@
  *
  * @return RESULT_SUCCESS when the result is 'Success',
  *         RESULT_FAILURE when the result is 'Failure',
- *         or a negative value if an error occured during evaluation.
+ *         or a negative value if an error occurred during evaluation.
  */
 static int diagnostics_relay_check_result(plist_t dict)
 {
@@ -229,7 +233,7 @@ LIBIMOBILEDEVICE_API diagnostics_relay_error_t diagnostics_relay_sleep(diagnosti
 	return ret;
 }
 
-static diagnostics_relay_error_t internal_diagnostics_relay_action(diagnostics_relay_client_t client, const char* name, int flags)
+static diagnostics_relay_error_t internal_diagnostics_relay_action(diagnostics_relay_client_t client, const char* name, diagnostics_relay_action_t flags)
 {
 	if (!client)
 		return DIAGNOSTICS_RELAY_E_INVALID_ARG;
@@ -273,12 +277,12 @@ static diagnostics_relay_error_t internal_diagnostics_relay_action(diagnostics_r
 	return ret;
 }
 
-LIBIMOBILEDEVICE_API diagnostics_relay_error_t diagnostics_relay_restart(diagnostics_relay_client_t client, int flags)
+LIBIMOBILEDEVICE_API diagnostics_relay_error_t diagnostics_relay_restart(diagnostics_relay_client_t client, diagnostics_relay_action_t flags)
 {
 	return internal_diagnostics_relay_action(client, "Restart", flags);
 }
 
-LIBIMOBILEDEVICE_API diagnostics_relay_error_t diagnostics_relay_shutdown(diagnostics_relay_client_t client, int flags)
+LIBIMOBILEDEVICE_API diagnostics_relay_error_t diagnostics_relay_shutdown(diagnostics_relay_client_t client, diagnostics_relay_action_t flags)
 {
 	return internal_diagnostics_relay_action(client, "Shutdown", flags);
 }

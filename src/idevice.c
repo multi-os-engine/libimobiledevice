@@ -2,8 +2,8 @@
  * idevice.c
  * Device discovery and communication interface.
  *
+ * Copyright (c) 2009-2019 Nikias Bassen. All Rights Reserved.
  * Copyright (c) 2014 Martin Szulecki All Rights Reserved.
- * Copyright (c) 2009-2014 Nikias Bassen. All Rights Reserved.
  * Copyright (c) 2008 Zach C. All Rights Reserved.
  *
  * This library is free software; you can redistribute it and/or
@@ -29,27 +29,37 @@
 #include <string.h>
 #include <errno.h>
 
-#ifdef WIN32
-#include <windows.h>
-#endif
-
 #include <usbmuxd.h>
 #ifdef HAVE_OPENSSL
 #include <openssl/err.h>
+#include <openssl/rsa.h>
 #include <openssl/ssl.h>
-
 #else
 #include <gnutls/gnutls.h>
 #endif
 
 #include "idevice.h"
 #include "common/userpref.h"
+#include "common/socket.h"
 #include "common/thread.h"
 #include "common/debug.h"
 
+#ifdef WIN32
+#include <windows.h>
+#endif
+
+#ifndef ETIMEDOUT
+#define ETIMEDOUT 138
+#endif
+
 #ifdef HAVE_OPENSSL
 
-#if OPENSSL_VERSION_NUMBER < 0x10002000L
+#if OPENSSL_VERSION_NUMBER < 0x10100000L || \
+	(defined(LIBRESSL_VERSION_NUMBER) && (LIBRESSL_VERSION_NUMBER < 0x20020000L))
+#define TLS_method TLSv1_method
+#endif
+
+#if OPENSSL_VERSION_NUMBER < 0x10002000L || defined(LIBRESSL_VERSION_NUMBER)
 static void SSL_COMP_free_compression_methods(void)
 {
 	sk_SSL_COMP_free(SSL_COMP_get_compression_methods());
@@ -60,7 +70,7 @@ static void openssl_remove_thread_state(void)
 {
 /*  ERR_remove_thread_state() is available since OpenSSL 1.0.0-beta1, but
  *  deprecated in OpenSSL 1.1.0 */
-#if OPENSSL_VERSION_NUMBER < 0x10100000L
+#if OPENSSL_VERSION_NUMBER < 0x10100000L || defined(LIBRESSL_VERSION_NUMBER)
 #if OPENSSL_VERSION_NUMBER >= 0x10000001L
 	ERR_remove_thread_state(NULL);
 #else
@@ -69,7 +79,7 @@ static void openssl_remove_thread_state(void)
 #endif
 }
 
-#if OPENSSL_VERSION_NUMBER < 0x10100000L
+#if OPENSSL_VERSION_NUMBER < 0x10100000L || defined(LIBRESSL_VERSION_NUMBER)
 static mutex_t *mutex_buf = NULL;
 static void locking_function(int mode, int n, const char* file, int line)
 {
@@ -79,17 +89,24 @@ static void locking_function(int mode, int n, const char* file, int line)
 		mutex_unlock(&mutex_buf[n]);
 }
 
+#if OPENSSL_VERSION_NUMBER < 0x10000000L
 static unsigned long id_function(void)
 {
 	return ((unsigned long)THREAD_ID);
 }
+#else
+static void id_function(CRYPTO_THREADID *thread)
+{
+	CRYPTO_THREADID_set_numeric(thread, (unsigned long)THREAD_ID);
+}
 #endif
 #endif
+#endif /* HAVE_OPENSSL */
 
 static void internal_idevice_init(void)
 {
 #ifdef HAVE_OPENSSL
-#if OPENSSL_VERSION_NUMBER < 0x10100000L
+#if OPENSSL_VERSION_NUMBER < 0x10100000L || defined(LIBRESSL_VERSION_NUMBER)
 	int i;
 	SSL_library_init();
 
@@ -99,7 +116,11 @@ static void internal_idevice_init(void)
 	for (i = 0; i < CRYPTO_num_locks(); i++)
 		mutex_init(&mutex_buf[i]);
 
+#if OPENSSL_VERSION_NUMBER < 0x10000000L
 	CRYPTO_set_id_callback(id_function);
+#else
+	CRYPTO_THREADID_set_callback(id_function);
+#endif
 	CRYPTO_set_locking_callback(locking_function);
 #endif
 #else
@@ -110,10 +131,14 @@ static void internal_idevice_init(void)
 static void internal_idevice_deinit(void)
 {
 #ifdef HAVE_OPENSSL
-#if OPENSSL_VERSION_NUMBER < 0x10100000L
+#if OPENSSL_VERSION_NUMBER < 0x10100000L || defined(LIBRESSL_VERSION_NUMBER)
 	int i;
 	if (mutex_buf) {
+#if OPENSSL_VERSION_NUMBER < 0x10000000L
 		CRYPTO_set_id_callback(NULL);
+#else
+		CRYPTO_THREADID_set_callback(NULL);
+#endif
 		CRYPTO_set_locking_callback(NULL);
 		for (i = 0; i < CRYPTO_num_locks(); i++)
 			mutex_destroy(&mutex_buf[i]);
@@ -169,7 +194,14 @@ static void usbmux_event_cb(const usbmuxd_event_t *event, void *user_data)
 
 	ev.event = event->event;
 	ev.udid = event->device.udid;
-	ev.conn_type = CONNECTION_USBMUXD;
+	ev.conn_type = 0;
+	if (event->device.conn_type == CONNECTION_TYPE_USB) {
+		ev.conn_type = CONNECTION_USBMUXD;
+	} else if (event->device.conn_type == CONNECTION_TYPE_NETWORK) {
+		ev.conn_type = CONNECTION_NETWORK;
+	} else {
+		debug_info("Unknown connection type %d", event->device.conn_type);
+	}
 
 	if (event_cb) {
 		event_cb(&ev, user_data);
@@ -199,6 +231,62 @@ LIBIMOBILEDEVICE_API idevice_error_t idevice_event_unsubscribe(void)
 	return IDEVICE_E_SUCCESS;
 }
 
+LIBIMOBILEDEVICE_API idevice_error_t idevice_get_device_list_extended(idevice_info_t **devices, int *count)
+{
+	usbmuxd_device_info_t *dev_list;
+
+	*devices = NULL;
+	*count = 0;
+
+	if (usbmuxd_get_device_list(&dev_list) < 0) {
+		debug_info("ERROR: usbmuxd is not running!", __func__);
+		return IDEVICE_E_NO_DEVICE;
+	}
+
+	idevice_info_t *newlist = NULL;
+	int i, newcount = 0;
+
+	for (i = 0; dev_list[i].handle > 0; i++) {
+		newlist = realloc(*devices, sizeof(idevice_info_t) * (newcount+1));
+		newlist[newcount] = malloc(sizeof(struct idevice_info));
+		newlist[newcount]->udid = strdup(dev_list[i].udid);
+		if (dev_list[i].conn_type == CONNECTION_TYPE_USB) {
+			newlist[newcount]->conn_type = CONNECTION_USBMUXD;
+			newlist[newcount]->conn_data = NULL;
+		} else if (dev_list[i].conn_type == CONNECTION_TYPE_NETWORK) {
+			newlist[newcount]->conn_type = CONNECTION_NETWORK;
+			size_t addrlen = dev_list[i].conn_data[0];
+			newlist[newcount]->conn_data = malloc(addrlen);
+			memcpy(newlist[newcount]->conn_data, dev_list[i].conn_data, addrlen);
+		}
+		newcount++;
+		*devices = newlist;
+	}
+	usbmuxd_device_list_free(&dev_list);
+
+	*count = newcount;
+	newlist = realloc(*devices, sizeof(idevice_info_t) * (newcount+1));
+	newlist[newcount] = NULL;
+	*devices = newlist;
+
+	return IDEVICE_E_SUCCESS;
+}
+
+LIBIMOBILEDEVICE_API idevice_error_t idevice_device_list_extended_free(idevice_info_t *devices)
+{
+	if (devices) {
+		int i = 0;
+		while (devices[i]) {
+			free(devices[i]->udid);
+			free(devices[i]->conn_data);
+			free(devices[i]);
+			i++;
+		}
+		free(devices);
+	}
+	return IDEVICE_E_SUCCESS;
+}
+
 LIBIMOBILEDEVICE_API idevice_error_t idevice_get_device_list(char ***devices, int *count)
 {
 	usbmuxd_device_info_t *dev_list;
@@ -215,9 +303,11 @@ LIBIMOBILEDEVICE_API idevice_error_t idevice_get_device_list(char ***devices, in
 	int i, newcount = 0;
 
 	for (i = 0; dev_list[i].handle > 0; i++) {
-		newlist = realloc(*devices, sizeof(char*) * (newcount+1));
-		newlist[newcount++] = strdup(dev_list[i].udid);
-		*devices = newlist;
+		if (dev_list[i].conn_type == CONNECTION_TYPE_USB) {
+			newlist = realloc(*devices, sizeof(char*) * (newcount+1));
+			newlist[newcount++] = strdup(dev_list[i].udid);
+			*devices = newlist;
+		}
 	}
 	usbmuxd_device_list_free(&dev_list);
 
@@ -247,22 +337,64 @@ LIBIMOBILEDEVICE_API void idevice_set_debug_level(int level)
 	internal_set_debug_level(level);
 }
 
-LIBIMOBILEDEVICE_API idevice_error_t idevice_new(idevice_t * device, const char *udid)
+static idevice_t idevice_from_mux_device(usbmuxd_device_info_t *muxdev)
+{
+	if (!muxdev)
+		return NULL;
+
+	idevice_t device = (idevice_t)malloc(sizeof(struct idevice_private));
+	if (!device)
+		return NULL;
+
+	device->udid = strdup(muxdev->udid);
+	device->mux_id = muxdev->handle;
+	device->version = 0;
+	switch (muxdev->conn_type) {
+	case CONNECTION_TYPE_USB:
+		device->conn_type = CONNECTION_USBMUXD;
+		device->conn_data = NULL;
+		break;
+	case CONNECTION_TYPE_NETWORK:
+		device->conn_type = CONNECTION_NETWORK;
+		size_t len = ((uint8_t*)muxdev->conn_data)[0];
+		device->conn_data = malloc(len);
+		memcpy(device->conn_data, muxdev->conn_data, len);
+		break;
+	default:
+		device->conn_type = 0;
+		device->conn_data = NULL;
+		break;
+	}
+	return device;
+}
+
+LIBIMOBILEDEVICE_API idevice_error_t idevice_new_with_options(idevice_t * device, const char *udid, enum idevice_options options)
 {
 	usbmuxd_device_info_t muxdev;
-	int res = usbmuxd_get_device_by_udid(udid, &muxdev);
+	int usbmux_options = 0;
+	if (options & IDEVICE_LOOKUP_USBMUX) {
+		usbmux_options |= DEVICE_LOOKUP_USBMUX;
+	}
+	if (options & IDEVICE_LOOKUP_NETWORK) {
+		usbmux_options |= DEVICE_LOOKUP_NETWORK;
+	}
+	if (options & IDEVICE_LOOKUP_PREFER_NETWORK) {
+		usbmux_options |= DEVICE_LOOKUP_PREFER_NETWORK;
+	}
+	int res = usbmuxd_get_device(udid, &muxdev, usbmux_options);
 	if (res > 0) {
-		idevice_t dev = (idevice_t) malloc(sizeof(struct idevice_private));
-		dev->udid = strdup(muxdev.udid);
-		dev->conn_type = CONNECTION_USBMUXD;
-		dev->conn_data = (void*)(long)muxdev.handle;
-		dev->version = 0;
-		*device = dev;
+		*device = idevice_from_mux_device(&muxdev);
+		if (!*device) {
+			return IDEVICE_E_UNKNOWN_ERROR;
+		}
 		return IDEVICE_E_SUCCESS;
 	}
-	/* other connection types could follow here */
-
 	return IDEVICE_E_NO_DEVICE;
+}
+
+LIBIMOBILEDEVICE_API idevice_error_t idevice_new(idevice_t * device, const char *udid)
+{
+	return idevice_new_with_options(device, udid, 0);
 }
 
 LIBIMOBILEDEVICE_API idevice_error_t idevice_free(idevice_t device)
@@ -275,9 +407,6 @@ LIBIMOBILEDEVICE_API idevice_error_t idevice_free(idevice_t device)
 
 	free(device->udid);
 
-	if (device->conn_type == CONNECTION_USBMUXD) {
-		device->conn_data = 0;
-	}
 	if (device->conn_data) {
 		free(device->conn_data);
 	}
@@ -291,8 +420,8 @@ LIBIMOBILEDEVICE_API idevice_error_t idevice_connect(idevice_t device, uint16_t 
 		return IDEVICE_E_INVALID_ARG;
 	}
 
-	if (device->conn_type == CONNECTION_USBMUXD) {
-		int sfd = usbmuxd_connect((uint32_t)(long)device->conn_data, port);
+	if (device->conn_type == CONNECTION_USBMUXD || device->conn_type == CONNECTION_NETWORK) {
+		int sfd = usbmuxd_connect(device->mux_id, port);
 		if (sfd < 0) {
 			debug_info("ERROR: Connecting to usbmuxd failed: %d (%s)", sfd, strerror(-sfd));
 			return IDEVICE_E_UNKNOWN_ERROR;
@@ -301,7 +430,7 @@ LIBIMOBILEDEVICE_API idevice_error_t idevice_connect(idevice_t device, uint16_t 
 		new_connection->type = CONNECTION_USBMUXD;
 		new_connection->data = (void*)(long)sfd;
 		new_connection->ssl_data = NULL;
-		idevice_get_udid(device, &new_connection->udid);
+		new_connection->device = device;
 		*connection = new_connection;
 		return IDEVICE_E_SUCCESS;
 	} else {
@@ -321,16 +450,13 @@ LIBIMOBILEDEVICE_API idevice_error_t idevice_disconnect(idevice_connection_t con
 		idevice_connection_disable_ssl(connection);
 	}
 	idevice_error_t result = IDEVICE_E_UNKNOWN_ERROR;
-	if (connection->type == CONNECTION_USBMUXD) {
+	if (connection->type == CONNECTION_USBMUXD || connection->type == CONNECTION_NETWORK) {
 		usbmuxd_disconnect((int)(long)connection->data);
 		connection->data = NULL;
 		result = IDEVICE_E_SUCCESS;
 	} else {
 		debug_info("Unknown connection type %d", connection->type);
 	}
-
-	if (connection->udid)
-		free(connection->udid);
 
 	free(connection);
 	connection = NULL;
@@ -347,7 +473,7 @@ static idevice_error_t internal_connection_send(idevice_connection_t connection,
 		return IDEVICE_E_INVALID_ARG;
 	}
 
-	if (connection->type == CONNECTION_USBMUXD) {
+	if (connection->type == CONNECTION_USBMUXD || connection->type == CONNECTION_NETWORK) {
 		int res = usbmuxd_send((int)(long)connection->data, data, len, sent_bytes);
 		if (res < 0) {
 			debug_info("ERROR: usbmuxd_send returned %d (%s)", res, strerror(-res));
@@ -368,20 +494,44 @@ LIBIMOBILEDEVICE_API idevice_error_t idevice_connection_send(idevice_connection_
 	}
 
 	if (connection->ssl_data) {
+		uint32_t sent = 0;
+		while (sent < len) {
 #ifdef HAVE_OPENSSL
-		int sent = SSL_write(connection->ssl_data->session, (const void*)data, (int)len);
-		debug_info("SSL_write %d, sent %d", len, sent);
+			int s = SSL_write(connection->ssl_data->session, (const void*)(data+sent), (int)(len-sent));
 #else
-		ssize_t sent = gnutls_record_send(connection->ssl_data->session, (void*)data, (size_t)len);
+			ssize_t s = gnutls_record_send(connection->ssl_data->session, (void*)(data+sent), (size_t)(len-sent));
 #endif
-		if ((uint32_t)sent == (uint32_t)len) {
-			*sent_bytes = sent;
-			return IDEVICE_E_SUCCESS;
+			if (s < 0) {
+				break;
+			}
+			sent += s;
 		}
-		*sent_bytes = 0;
-		return IDEVICE_E_SSL_ERROR;
+		debug_info("SSL_write %d, sent %d", len, sent);
+		if (sent < len) {
+			*sent_bytes = 0;
+			return IDEVICE_E_SSL_ERROR;
+		}
+		*sent_bytes = sent;
+		return IDEVICE_E_SUCCESS;
 	}
 	return internal_connection_send(connection, data, len, sent_bytes);
+}
+
+static idevice_error_t socket_recv_to_idevice_error(int conn_error, uint32_t len, uint32_t received)
+{
+	if (conn_error < 0) {
+		switch (conn_error) {
+			case -EAGAIN:
+				debug_info("ERROR: received partial data %d/%d (%s)", received, len, strerror(-conn_error));
+				return IDEVICE_E_NOT_ENOUGH_DATA;
+			case -ETIMEDOUT:
+				return IDEVICE_E_TIMEOUT;
+			default:
+				return IDEVICE_E_UNKNOWN_ERROR;
+		}
+	}
+
+	return IDEVICE_E_SUCCESS;
 }
 
 /**
@@ -394,13 +544,15 @@ static idevice_error_t internal_connection_receive_timeout(idevice_connection_t 
 		return IDEVICE_E_INVALID_ARG;
 	}
 
-	if (connection->type == CONNECTION_USBMUXD) {
-		int res = usbmuxd_recv_timeout((int)(long)connection->data, data, len, recv_bytes, timeout);
-		if (res < 0) {
-			debug_info("ERROR: usbmuxd_recv_timeout returned %d (%s)", res, strerror(errno));
-			return (res == -EAGAIN ? IDEVICE_E_NOT_ENOUGH_DATA : IDEVICE_E_UNKNOWN_ERROR);
+	if (connection->type == CONNECTION_USBMUXD || connection->type == CONNECTION_NETWORK) {
+		int conn_error = usbmuxd_recv_timeout((int)(long)connection->data, data, len, recv_bytes, timeout);
+		idevice_error_t error = socket_recv_to_idevice_error(conn_error, len, *recv_bytes);
+
+		if (error == IDEVICE_E_UNKNOWN_ERROR) {
+			debug_info("ERROR: usbmuxd_recv_timeout returned %d (%s)", conn_error, strerror(-conn_error));
 		}
-		return IDEVICE_E_SUCCESS;
+
+		return error;
 	} else {
 		debug_info("Unknown connection type %d", connection->type);
 	}
@@ -409,13 +561,32 @@ static idevice_error_t internal_connection_receive_timeout(idevice_connection_t 
 
 LIBIMOBILEDEVICE_API idevice_error_t idevice_connection_receive_timeout(idevice_connection_t connection, char *data, uint32_t len, uint32_t *recv_bytes, unsigned int timeout)
 {
-	if (!connection || (connection->ssl_data && !connection->ssl_data->session)) {
+	if (!connection || (connection->ssl_data && !connection->ssl_data->session) || len == 0) {
 		return IDEVICE_E_INVALID_ARG;
 	}
 
 	if (connection->ssl_data) {
 		uint32_t received = 0;
+		int do_select = 1;
+
 		while (received < len) {
+#ifdef HAVE_OPENSSL
+			do_select = (SSL_pending(connection->ssl_data->session) == 0);
+#endif
+			if (do_select) {
+				int conn_error = socket_check_fd((int)(long)connection->data, FDM_READ, timeout);
+				idevice_error_t error = socket_recv_to_idevice_error(conn_error, len, received);
+
+				switch (error) {
+					case IDEVICE_E_SUCCESS:
+						break;
+					case IDEVICE_E_UNKNOWN_ERROR:
+						debug_info("ERROR: socket_check_fd returned %d (%s)", conn_error, strerror(-conn_error));
+					default:
+						return error;
+				}
+			}
+
 #ifdef HAVE_OPENSSL
 			int r = SSL_read(connection->ssl_data->session, (void*)((char*)(data+received)), (int)len-received);
 #else
@@ -427,13 +598,15 @@ LIBIMOBILEDEVICE_API idevice_error_t idevice_connection_receive_timeout(idevice_
 				break;
 			}
 		}
+
 		debug_info("SSL_read %d, received %d", len, received);
-		if (received > 0) {
-			*recv_bytes = received;
-			return IDEVICE_E_SUCCESS;
+		if (received < len) {
+			*recv_bytes = 0;
+			return IDEVICE_E_SSL_ERROR;
 		}
-		*recv_bytes = 0;
-		return IDEVICE_E_SSL_ERROR;
+		
+		*recv_bytes = received;
+		return IDEVICE_E_SUCCESS;
 	}
 	return internal_connection_receive_timeout(connection, data, len, recv_bytes, timeout);
 }
@@ -447,7 +620,7 @@ static idevice_error_t internal_connection_receive(idevice_connection_t connecti
 		return IDEVICE_E_INVALID_ARG;
 	}
 
-	if (connection->type == CONNECTION_USBMUXD) {
+	if (connection->type == CONNECTION_USBMUXD || connection->type == CONNECTION_NETWORK) {
 		int res = usbmuxd_recv((int)(long)connection->data, data, len, recv_bytes);
 		if (res < 0) {
 			debug_info("ERROR: usbmuxd_recv returned %d (%s)", res, strerror(-res));
@@ -491,7 +664,7 @@ LIBIMOBILEDEVICE_API idevice_error_t idevice_connection_get_fd(idevice_connectio
 	}
 
 	idevice_error_t result = IDEVICE_E_UNKNOWN_ERROR;
-	if (connection->type == CONNECTION_USBMUXD) {
+	if (connection->type == CONNECTION_USBMUXD || connection->type == CONNECTION_NETWORK) {
 		*fd = (int)(long)connection->data;
 		result = IDEVICE_E_SUCCESS;
 	} else {
@@ -502,16 +675,11 @@ LIBIMOBILEDEVICE_API idevice_error_t idevice_connection_get_fd(idevice_connectio
 
 LIBIMOBILEDEVICE_API idevice_error_t idevice_get_handle(idevice_t device, uint32_t *handle)
 {
-	if (!device)
+	if (!device || !handle)
 		return IDEVICE_E_INVALID_ARG;
 
-	if (device->conn_type == CONNECTION_USBMUXD) {
-		*handle = (uint32_t)(long)device->conn_data;
-		return IDEVICE_E_SUCCESS;
-	} else {
-		debug_info("Unknown connection type %d", device->conn_type);
-	}
-	return IDEVICE_E_UNKNOWN_ERROR;
+	*handle = device->mux_id;
+	return IDEVICE_E_SUCCESS;
 }
 
 LIBIMOBILEDEVICE_API idevice_error_t idevice_get_udid(idevice_t device, char **udid)
@@ -705,9 +873,9 @@ LIBIMOBILEDEVICE_API idevice_error_t idevice_connection_enable_ssl(idevice_conne
 #endif
 	plist_t pair_record = NULL;
 
-	userpref_read_pair_record(connection->udid, &pair_record);
+	userpref_read_pair_record(connection->device->udid, &pair_record);
 	if (!pair_record) {
-		debug_info("ERROR: Failed enabling SSL. Unable to read pair record for udid %s.", connection->udid);
+		debug_info("ERROR: Failed enabling SSL. Unable to read pair record for udid %s.", connection->device->udid);
 		return ret;
 	}
 
@@ -728,12 +896,35 @@ LIBIMOBILEDEVICE_API idevice_error_t idevice_connection_enable_ssl(idevice_conne
 	}
 	BIO_set_fd(ssl_bio, (int)(long)connection->data, BIO_NOCLOSE);
 
-	SSL_CTX *ssl_ctx = SSL_CTX_new(TLSv1_method());
+	SSL_CTX *ssl_ctx = SSL_CTX_new(TLS_method());
 	if (ssl_ctx == NULL) {
 		debug_info("ERROR: Could not create SSL context.");
 		BIO_free(ssl_bio);
 		return ret;
 	}
+
+#if OPENSSL_VERSION_NUMBER < 0x10100002L || \
+	(defined(LIBRESSL_VERSION_NUMBER) && (LIBRESSL_VERSION_NUMBER < 0x2060000fL))
+	/* force use of TLSv1 for older devices */
+	if (connection->device->version < DEVICE_VERSION(10,0,0)) {
+#ifdef SSL_OP_NO_TLSv1_1
+		long opts = SSL_CTX_get_options(ssl_ctx);
+		opts |= SSL_OP_NO_TLSv1_1;
+#ifdef SSL_OP_NO_TLSv1_2
+		opts |= SSL_OP_NO_TLSv1_2;
+#endif
+#ifdef SSL_OP_NO_TLSv1_3
+		opts |= SSL_OP_NO_TLSv1_3;
+#endif
+		SSL_CTX_set_options(ssl_ctx, opts);
+#endif
+	}
+#else
+	SSL_CTX_set_min_proto_version(ssl_ctx, TLS1_VERSION);
+	if (connection->device->version < DEVICE_VERSION(10,0,0)) {
+		SSL_CTX_set_max_proto_version(ssl_ctx, TLS1_VERSION);
+	}
+#endif
 
 	BIO* membp;
 	X509* rootCert = NULL;
@@ -778,7 +969,7 @@ LIBIMOBILEDEVICE_API idevice_error_t idevice_connection_enable_ssl(idevice_conne
 		ssl_data_loc->ctx = ssl_ctx;
 		connection->ssl_data = ssl_data_loc;
 		ret = IDEVICE_E_SUCCESS;
-		debug_info("SSL mode enabled, cipher: %s", SSL_get_cipher(ssl));
+		debug_info("SSL mode enabled, %s, cipher: %s", SSL_get_version(ssl), SSL_get_cipher(ssl));
 	}
 	/* required for proper multi-thread clean up to prevent leaks */
 	openssl_remove_thread_state();
@@ -845,6 +1036,11 @@ LIBIMOBILEDEVICE_API idevice_error_t idevice_connection_enable_ssl(idevice_conne
 
 LIBIMOBILEDEVICE_API idevice_error_t idevice_connection_disable_ssl(idevice_connection_t connection)
 {
+	return idevice_connection_disable_bypass_ssl(connection, 0);
+}
+
+LIBIMOBILEDEVICE_API idevice_error_t idevice_connection_disable_bypass_ssl(idevice_connection_t connection, uint8_t sslBypass)
+{
 	if (!connection)
 		return IDEVICE_E_INVALID_ARG;
 	if (!connection->ssl_data) {
@@ -852,18 +1048,29 @@ LIBIMOBILEDEVICE_API idevice_error_t idevice_connection_disable_ssl(idevice_conn
 		return IDEVICE_E_SUCCESS;
 	}
 
+	// some services require plain text communication after SSL handshake
+	// sending out SSL_shutdown will cause bytes
+	if (!sslBypass) {
 #ifdef HAVE_OPENSSL
-	if (connection->ssl_data->session) {
-		/* see: https://www.openssl.org/docs/ssl/SSL_shutdown.html#RETURN_VALUES */
-		if (SSL_shutdown(connection->ssl_data->session) == 0) {
-			SSL_shutdown(connection->ssl_data->session);
+		if (connection->ssl_data->session) {
+			/* see: https://www.openssl.org/docs/ssl/SSL_shutdown.html#RETURN_VALUES */
+			if (SSL_shutdown(connection->ssl_data->session) == 0) {
+				/* Only try bidirectional shutdown if we know it can complete */
+				int ssl_error;
+				if ((ssl_error = SSL_get_error(connection->ssl_data->session, 0)) == SSL_ERROR_NONE) {
+					SSL_shutdown(connection->ssl_data->session);
+				} else  {
+					debug_info("Skipping bidirectional SSL shutdown. SSL error code: %i\n", ssl_error);
+				}
+			}
 		}
-	}
 #else
-	if (connection->ssl_data->session) {
-		gnutls_bye(connection->ssl_data->session, GNUTLS_SHUT_RDWR);
-	}
+		if (connection->ssl_data->session) {
+			gnutls_bye(connection->ssl_data->session, GNUTLS_SHUT_RDWR);
+		}
 #endif
+	}
+
 	internal_ssl_cleanup(connection->ssl_data);
 	free(connection->ssl_data);
 	connection->ssl_data = NULL;

@@ -30,6 +30,9 @@
 #if HAVE_LANGINFO_CODESET
 #include <langinfo.h>
 #endif
+#ifndef WIN32
+#include <signal.h>
+#endif
 
 #include <libimobiledevice/libimobiledevice.h>
 #include <libimobiledevice/lockdown.h>
@@ -50,7 +53,7 @@ static void print_usage(int argc, char **argv)
 	printf("NOTE: Setting the time on iOS 6 and later is only supported\n");
 	printf("      in the setup wizard screens before device activation.\n\n");
 	printf("  -d, --debug\t\tenable communication debugging\n");
-	printf("  -u, --udid UDID\ttarget specific device by its 40-digit device UDID\n");
+	printf("  -u, --udid UDID\ttarget specific device by UDID\n");
 	printf("  -s, --set TIMESTAMP\tset UTC time described by TIMESTAMP\n");
 	printf("  -c, --sync\t\tset time of device to current system time\n");
 	printf("  -h, --help\t\tprints usage information\n");
@@ -76,6 +79,9 @@ int main(int argc, char *argv[])
 	char buffer[80];
 	int result = 0;
 
+#ifndef WIN32
+	signal(SIGPIPE, SIG_IGN);
+#endif
 	/* parse cmdline args */
 	for (i = 1; i < argc; i++) {
 		if (!strcmp(argv[i], "-d") || !strcmp(argv[i], "--debug")) {
@@ -84,7 +90,7 @@ int main(int argc, char *argv[])
 		}
 		else if (!strcmp(argv[i], "-u") || !strcmp(argv[i], "--udid")) {
 			i++;
-			if (!argv[i] || (strlen(argv[i]) != 40)) {
+			if (!argv[i] || !*argv[i]) {
 				print_usage(argc, argv);
 				return 0;
 			}

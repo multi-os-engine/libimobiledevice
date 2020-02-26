@@ -34,6 +34,9 @@
 #include <time.h>
 #include <sys/time.h>
 #include <inttypes.h>
+#ifndef WIN32
+#include <signal.h>
+#endif
 
 #include <libimobiledevice/libimobiledevice.h>
 #include <libimobiledevice/lockdown.h>
@@ -63,7 +66,7 @@ static void print_usage(int argc, char **argv)
 	name = strrchr(argv[0], '/');
 	printf("Usage: %s [OPTIONS] IMAGE_FILE IMAGE_SIGNATURE_FILE\n\n", (name ? name + 1: argv[0]));
 	printf("Mounts the specified disk image on the device.\n\n");
-	printf("  -u, --udid UDID\ttarget specific device by its 40-digit device UDID\n");
+	printf("  -u, --udid UDID\ttarget specific device by UDID\n");
 	printf("  -l, --list\t\tList mount information\n");
 	printf("  -t, --imagetype\tImage type to use, default is 'Developer'\n");
 	printf("  -x, --xml\t\tUse XML output\n");
@@ -76,19 +79,18 @@ static void print_usage(int argc, char **argv)
 static void parse_opts(int argc, char **argv)
 {
 	static struct option longopts[] = {
-		{"help", 0, NULL, 'h'},
-		{"udid", 0, NULL, 'u'},
-		{"list", 0, NULL, 'l'},
-		{"imagetype", 0, NULL, 't'},
-		{"xml", 0, NULL, 'x'},
-		{"debug", 0, NULL, 'd'},
+		{"help", no_argument, NULL, 'h'},
+		{"udid", required_argument, NULL, 'u'},
+		{"list", no_argument, NULL, 'l'},
+		{"imagetype", required_argument, NULL, 't'},
+		{"xml", no_argument, NULL, 'x'},
+		{"debug", no_argument, NULL, 'd'},
 		{NULL, 0, NULL, 0}
 	};
 	int c;
 
 	while (1) {
-		c = getopt_long(argc, argv, "hu:lt:xd", longopts,
-						(int *) 0);
+		c = getopt_long(argc, argv, "hu:lt:xd", longopts, NULL);
 		if (c == -1) {
 			break;
 		}
@@ -98,18 +100,20 @@ static void parse_opts(int argc, char **argv)
 			print_usage(argc, argv);
 			exit(0);
 		case 'u':
-			if (strlen(optarg) != 40) {
-				printf("%s: invalid UDID specified (length != 40)\n",
-					   argv[0]);
+			if (!*optarg) {
+				fprintf(stderr, "ERROR: UDID must not be empty!\n");
 				print_usage(argc, argv);
 				exit(2);
 			}
+			free(udid);
 			udid = strdup(optarg);
 			break;
 		case 'l':
 			list_mode = 1;
 			break;
 		case 't':
+			if (imagetype)
+				free(imagetype);
 			imagetype = strdup(optarg);
 			break;
 		case 'x':
@@ -152,6 +156,9 @@ int main(int argc, char **argv)
 	size_t image_size = 0;
 	char *image_sig_path = NULL;
 
+#ifndef WIN32
+	signal(SIGPIPE, SIG_IGN);
+#endif
 	parse_opts(argc, argv);
 
 	argc -= optind;
@@ -247,7 +254,7 @@ int main(int argc, char **argv)
 	lockdownd_client_free(lckd);
 	lckd = NULL;
 
-	mobile_image_mounter_error_t err;
+	mobile_image_mounter_error_t err = MOBILE_IMAGE_MOUNTER_E_UNKNOWN_ERROR;
 	plist_t result = NULL;
 
 	if (list_mode) {
@@ -343,7 +350,7 @@ int main(int argc, char **argv)
 						uint32_t written, total = 0;
 						while (total < amount) {
 							written = 0;
-							if (afc_file_write(afc, af, buf, amount, &written) !=
+							if (afc_file_write(afc, af, buf + total, amount - total, &written) !=
 								AFC_E_SUCCESS) {
 								fprintf(stderr, "AFC Write error!\n");
 								break;
@@ -367,6 +374,14 @@ int main(int argc, char **argv)
 
 		fclose(f);
 
+		if (err != MOBILE_IMAGE_MOUNTER_E_SUCCESS) {
+			if (err == MOBILE_IMAGE_MOUNTER_E_DEVICE_LOCKED) {
+				printf("ERROR: Device is locked, can't mount. Unlock device and try again.\n");
+			} else {
+				printf("ERROR: Unknown error occurred, can't mount.\n");
+			}
+			goto error_out;
+		}
 		printf("done.\n");
 
 		printf("Mounting...\n");
@@ -434,6 +449,7 @@ int main(int argc, char **argv)
 		plist_free(result);
 	}
 
+error_out:
 	/* perform hangup command */
 	mobile_image_mounter_hangup(mim);
 	/* free client */

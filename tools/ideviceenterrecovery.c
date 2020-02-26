@@ -27,6 +27,9 @@
 #include <string.h>
 #include <errno.h>
 #include <stdlib.h>
+#ifndef WIN32
+#include <signal.h>
+#endif
 
 #include <libimobiledevice/libimobiledevice.h>
 #include <libimobiledevice/lockdown.h>
@@ -37,7 +40,7 @@ static void print_usage(int argc, char **argv)
 
 	name = strrchr(argv[0], '/');
 	printf("Usage: %s [OPTIONS] UDID\n", (name ? name + 1: argv[0]));
-	printf("Makes a device with the supplied 40-digit UDID enter recovery mode immediately.\n\n");
+	printf("Makes a device with the supplied UDID enter recovery mode immediately.\n\n");
 	printf("  -d, --debug\t\tenable communication debugging\n");
 	printf("  -h, --help\t\tprints usage information\n");
 	printf("\n");
@@ -53,6 +56,9 @@ int main(int argc, char *argv[])
 	int i;
 	const char* udid = NULL;
 
+#ifndef WIN32
+	signal(SIGPIPE, SIG_IGN);
+#endif
 	/* parse cmdline args */
 	for (i = 1; i < argc; i++) {
 		if (!strcmp(argv[i], "-d") || !strcmp(argv[i], "--debug")) {
@@ -66,7 +72,7 @@ int main(int argc, char *argv[])
 	}
 
 	i--;
-	if (!argv[i] || (strlen(argv[i]) != 40)) {
+	if (argc < 2 || !argv[i] || !*argv[i]) {
 		print_usage(argc, argv);
 		return 0;
 	}

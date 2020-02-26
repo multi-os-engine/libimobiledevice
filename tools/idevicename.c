@@ -28,6 +28,9 @@
 #include <unistd.h>
 #include <stdlib.h>
 #include <getopt.h>
+#ifndef WIN32
+#include <signal.h>
+#endif
 
 #include <libimobiledevice/libimobiledevice.h>
 #include <libimobiledevice/lockdown.h>
@@ -38,7 +41,7 @@ static void print_usage(void)
 	printf("Display the device name or set it to NAME if specified.\n");
 	printf("\n");
 	printf("  -d, --debug\t\tenable communication debugging\n");
-	printf("  -u, --udid UDID\tuse UDID to target a specific device\n");
+	printf("  -u, --udid UDID\ttarget specific device by UDID\n");
 	printf("  -h, --help\t\tprint usage information\n");
 	printf("\n");
 	printf("Homepage: <" PACKAGE_URL ">\n");
@@ -57,9 +60,19 @@ int main(int argc, char** argv)
 		{ NULL, 0, NULL, 0}
 	};
 
+#ifndef WIN32
+	signal(SIGPIPE, SIG_IGN);
+#endif
+
 	while ((c = getopt_long(argc, argv, "du:h", longopts, &optidx)) != -1) {
 		switch (c) {
 		case 'u':
+			if (!*optarg) {
+				fprintf(stderr, "ERROR: UDID must not be empty!\n");
+				print_usage();
+				exit(2);
+			}
+			free(udid);
 			udid = strdup(optarg);
 			break;
 		case 'h':
