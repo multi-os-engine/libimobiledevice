@@ -24,6 +24,8 @@
 #include <config.h>
 #endif
 
+#define TOOL_NAME "idevicebackup2"
+
 #include <stdio.h>
 #include <string.h>
 #include <errno.h>
@@ -346,7 +348,7 @@ static plist_t mobilebackup_factory_info_plist_new(const char* udid, idevice_t d
 	char *udid_uppercase = NULL;
 
 	lockdownd_client_t lockdown = NULL;
-	if (lockdownd_client_new_with_handshake(device, &lockdown, "idevicebackup2") != LOCKDOWN_E_SUCCESS) {
+	if (lockdownd_client_new_with_handshake(device, &lockdown, TOOL_NAME) != LOCKDOWN_E_SUCCESS) {
 		return NULL;
 	}
 
@@ -367,7 +369,7 @@ static plist_t mobilebackup_factory_info_plist_new(const char* udid, idevice_t d
 	plist_t app_dict = plist_new_dict();
 	plist_t installed_apps = plist_new_array();
 	instproxy_client_t ip = NULL;
-	if (instproxy_client_start_service(device, &ip, "idevicebackup2") == INSTPROXY_E_SUCCESS) {
+	if (instproxy_client_start_service(device, &ip, TOOL_NAME) == INSTPROXY_E_SUCCESS) {
 		plist_t client_opts = instproxy_client_options_new();
 		instproxy_client_options_add(client_opts, "ApplicationType", "User", NULL);
 		instproxy_client_options_set_return_attributes(client_opts, "CFBundleIdentifier", "ApplicationSINF", "iTunesMetadata", NULL);
@@ -376,7 +378,7 @@ static plist_t mobilebackup_factory_info_plist_new(const char* udid, idevice_t d
 		instproxy_browse(ip, client_opts, &apps);
 
 		sbservices_client_t sbs = NULL;
-		if (sbservices_client_start_service(device, &sbs, "idevicebackup2") != SBSERVICES_E_SUCCESS) {
+		if (sbservices_client_start_service(device, &sbs, TOOL_NAME) != SBSERVICES_E_SUCCESS) {
 			printf("Couldn't establish sbservices connection. Continuing anyway.\n");
 		}
 
@@ -627,7 +629,7 @@ static void do_post_notification(idevice_t device, const char *notification)
 
 	lockdownd_client_t lockdown = NULL;
 
-	if (lockdownd_client_new_with_handshake(device, &lockdown, "idevicebackup2") != LOCKDOWN_E_SUCCESS) {
+	if (lockdownd_client_new_with_handshake(device, &lockdown, TOOL_NAME) != LOCKDOWN_E_SUCCESS) {
 		return;
 	}
 
@@ -1403,8 +1405,10 @@ static void print_usage(int argc, char **argv)
 	char *name = NULL;
 	name = strrchr(argv[0], '/');
 	printf("Usage: %s [OPTIONS] CMD [CMDOPTIONS] DIRECTORY\n", (name ? name + 1: argv[0]));
-	printf("Create or restore backup from the current or specified directory.\n\n");
-	printf("commands:\n");
+	printf("\n");
+	printf("Create or restore backup from the current or specified directory.\n");
+	printf("\n");
+	printf("CMD:\n");
 	printf("  backup\tcreate backup for the device\n");
 	printf("    --full\t\tforce full backup from device.\n");
 	printf("  restore\trestore last backup to the device\n");
@@ -1424,14 +1428,17 @@ static void print_usage(int argc, char **argv)
 	printf("    NOTE: passwords will be requested in interactive mode if omitted\n");
 	printf("  cloud on|off\tenable or disable cloud use (requires iCloud account)\n");
 	printf("\n");
-	printf("options:\n");
-	printf("  -d, --debug\t\tenable communication debugging\n");
+	printf("OPTIONS:\n");
 	printf("  -u, --udid UDID\ttarget specific device by UDID\n");
 	printf("  -s, --source UDID\tuse backup data from device specified by UDID\n");
+	printf("  -n, --network\t\tconnect to network device\n");
 	printf("  -i, --interactive\trequest passwords interactively\n");
+	printf("  -d, --debug\t\tenable communication debugging\n");
 	printf("  -h, --help\t\tprints usage information\n");
+	printf("  -v, --version\t\tprints version information\n");
 	printf("\n");
-	printf("Homepage: <" PACKAGE_URL ">\n");
+	printf("Homepage:    <" PACKAGE_URL ">\n");
+	printf("Bug Reports: <" PACKAGE_BUGREPORT ">\n");
 }
 
 #define DEVICE_VERSION(maj, min, patch) (((maj & 0xFF) << 16) | ((min & 0xFF) << 8) | (patch & 0xFF))
@@ -1443,6 +1450,7 @@ int main(int argc, char *argv[])
 	int i;
 	char* udid = NULL;
 	char* source_udid = NULL;
+	int use_network = 0;
 	lockdownd_service_descriptor_t service = NULL;
 	int cmd = -1;
 	int cmd_flags = 0;
@@ -1490,12 +1498,20 @@ int main(int argc, char *argv[])
 			source_udid = strdup(argv[i]);
 			continue;
 		}
+		else if (!strcmp(argv[i], "-n") || !strcmp(argv[i], "--network")) {
+			use_network = 1;
+			continue;
+		}
 		else if (!strcmp(argv[i], "-i") || !strcmp(argv[i], "--interactive")) {
 			interactive_mode = 1;
 			continue;
 		}
 		else if (!strcmp(argv[i], "-h") || !strcmp(argv[i], "--help")) {
 			print_usage(argc, argv);
+			return 0;
+		}
+		else if (!strcmp(argv[i], "-v") || !strcmp(argv[i], "--version")) {
+			printf("%s %s\n", TOOL_NAME, PACKAGE_VERSION);
 			return 0;
 		}
 		else if (!strcmp(argv[i], "backup")) {
@@ -1659,20 +1675,17 @@ int main(int argc, char *argv[])
 	}
 
 	idevice_t device = NULL;
-	if (udid) {
-		ret = idevice_new(&device, udid);
-		if (ret != IDEVICE_E_SUCCESS) {
-			printf("No device found with udid %s, is it plugged in?\n", udid);
-			return -1;
+	ret = idevice_new_with_options(&device, udid, (use_network) ? IDEVICE_LOOKUP_NETWORK : IDEVICE_LOOKUP_USBMUX);
+	if (ret != IDEVICE_E_SUCCESS) {
+		if (udid) {
+			printf("No device found with udid %s.\n", udid);
+		} else {
+			printf("No device found.\n");
 		}
+		return -1;
 	}
-	else
-	{
-		ret = idevice_new(&device, NULL);
-		if (ret != IDEVICE_E_SUCCESS) {
-			printf("No device found, is it plugged in?\n");
-			return -1;
-		}
+
+	if (!udid) {
 		idevice_get_udid(device, &udid);
 	}
 
@@ -1743,7 +1756,7 @@ int main(int argc, char *argv[])
 	}
 
 	lockdownd_client_t lockdown = NULL;
-	if (LOCKDOWN_E_SUCCESS != (ldret = lockdownd_client_new_with_handshake(device, &lockdown, "idevicebackup2"))) {
+	if (LOCKDOWN_E_SUCCESS != (ldret = lockdownd_client_new_with_handshake(device, &lockdown, TOOL_NAME))) {
 		printf("ERROR: Could not connect to lockdownd, error code %d\n", ldret);
 		idevice_free(device);
 		return -1;
@@ -2133,7 +2146,7 @@ checkpoint:
 				uint8_t passcode_hint = 0;
 				if (device_version >= DEVICE_VERSION(13,0,0)) {
 					diagnostics_relay_client_t diag = NULL;
-					if (diagnostics_relay_client_start_service(device, &diag, "idevicebackup2") == DIAGNOSTICS_RELAY_E_SUCCESS) {
+					if (diagnostics_relay_client_start_service(device, &diag, TOOL_NAME) == DIAGNOSTICS_RELAY_E_SUCCESS) {
 						plist_t dict = NULL;
 						plist_t keys = plist_new_array();
 						plist_array_append_item(keys, plist_new_string("PasswordConfigured"));

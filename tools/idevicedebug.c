@@ -23,6 +23,8 @@
 #include <config.h>
 #endif
 
+#define TOOL_NAME "idevicedebug"
+
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -186,17 +188,22 @@ static void print_usage(int argc, char **argv)
 	char *name = NULL;
 	name = strrchr(argv[0], '/');
 	printf("Usage: %s [OPTIONS] COMMAND\n", (name ? name + 1: argv[0]));
-	printf("Interact with the debugserver service of a device.\n\n");
-	printf(" Where COMMAND is one of:\n");
+	printf("\n");
+	printf("Interact with the debugserver service of a device.\n");
+	printf("\n");
+	printf("Where COMMAND is one of:\n");
 	printf("  run BUNDLEID [ARGS...]\trun app with BUNDLEID and optional ARGS on device.\n");
 	printf("\n");
-	printf(" The following OPTIONS are accepted:\n");
-	printf("  -e, --env NAME=VALUE\tset environment variable NAME to VALUE\n");
+	printf("The following OPTIONS are accepted:\n");
 	printf("  -u, --udid UDID\ttarget specific device by UDID\n");
+	printf("  -n, --network\t\tconnect to network device\n");
+	printf("  -e, --env NAME=VALUE\tset environment variable NAME to VALUE\n");
 	printf("  -d, --debug\t\tenable communication debugging\n");
 	printf("  -h, --help\t\tprints usage information\n");
+	printf("  -v, --version\t\tprints version information\n");
 	printf("\n");
-	printf("Homepage: <" PACKAGE_URL ">\n");
+	printf("Homepage:    <" PACKAGE_URL ">\n");
+	printf("Bug Reports: <" PACKAGE_BUGREPORT ">\n");
 }
 
 int main(int argc, char *argv[])
@@ -209,6 +216,7 @@ int main(int argc, char *argv[])
 	int i;
 	int cmd = CMD_NONE;
 	const char* udid = NULL;
+	int use_network = 0;
 	const char* bundle_identifier = NULL;
 	char* path = NULL;
 	char* working_directory = NULL;
@@ -243,6 +251,9 @@ int main(int argc, char *argv[])
 			}
 			udid = argv[i];
 			continue;
+		} else if (!strcmp(argv[i], "-n") || !strcmp(argv[i], "--network")) {
+			use_network = 1;
+			continue;
 		} else if (!strcmp(argv[i], "-e") || !strcmp(argv[i], "--env")) {
 			i++;
 			if (!argv[i] || (strlen(argv[i]) <= 1) || strchr(argv[i], '=') == NULL) {
@@ -260,6 +271,10 @@ int main(int argc, char *argv[])
 			continue;
 		} else if (!strcmp(argv[i], "-h") || !strcmp(argv[i], "--help")) {
 			print_usage(argc, argv);
+			res = 0;
+			goto cleanup;
+		} else if (!strcmp(argv[i], "-v") || !strcmp(argv[i], "--version")) {
+			printf("%s %s\n", TOOL_NAME, PACKAGE_VERSION);
 			res = 0;
 			goto cleanup;
 		} else if (!strcmp(argv[i], "run")) {
@@ -296,12 +311,12 @@ int main(int argc, char *argv[])
 	}
 
 	/* connect to the device */
-	ret = idevice_new(&device, udid);
+	ret = idevice_new_with_options(&device, udid, (use_network) ? IDEVICE_LOOKUP_NETWORK : IDEVICE_LOOKUP_USBMUX);
 	if (ret != IDEVICE_E_SUCCESS) {
 		if (udid) {
-			printf("No device found with udid %s, is it plugged in?\n", udid);
+			printf("No device found with udid %s.\n", udid);
 		} else {
-			printf("No device found, is it plugged in?\n");
+			printf("No device found.\n");
 		}
 		goto cleanup;
 	}
@@ -310,7 +325,7 @@ int main(int argc, char *argv[])
 		case CMD_RUN:
 		default:
 			/* get the path to the app and it's working directory */
-			if (instproxy_client_start_service(device, &instproxy_client, "idevicerun") != INSTPROXY_E_SUCCESS) {
+			if (instproxy_client_start_service(device, &instproxy_client, TOOL_NAME) != INSTPROXY_E_SUCCESS) {
 				fprintf(stderr, "Could not start installation proxy service.\n");
 				goto cleanup;
 			}
@@ -331,7 +346,7 @@ int main(int argc, char *argv[])
 			}
 
 			/* start and connect to debugserver */
-			if (debugserver_client_start_service(device, &debugserver_client, "idevicerun") != DEBUGSERVER_E_SUCCESS) {
+			if (debugserver_client_start_service(device, &debugserver_client, TOOL_NAME) != DEBUGSERVER_E_SUCCESS) {
 				fprintf(stderr,
 					"Could not start com.apple.debugserver!\n"
 					"Please make sure to mount the developer disk image first:\n"
