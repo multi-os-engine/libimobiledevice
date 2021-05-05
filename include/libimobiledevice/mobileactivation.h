@@ -138,7 +138,7 @@ mobileactivation_error_t mobileactivation_create_activation_info(mobileactivatio
  * provided by mobileactivation_create_activation_session_info().
  *
  * @param client The mobileactivation client
- * @aram handshake_result The handshake result returned from drmHandshake
+ * @aram handshake_response The handshake response returned from drmHandshake
  * @param info Pointer to a plist_t variable that will be set to the
  *     activation info created by the mobileactivation service. The
  *     consumer is responsible for freeing the returned object using
@@ -147,7 +147,7 @@ mobileactivation_error_t mobileactivation_create_activation_info(mobileactivatio
  * @return MOBILEACTIVATION_E_SUCCESS on success, or an MOBILEACTIVATION_E_*
  *     error code otherwise.
  */
-mobileactivation_error_t mobileactivation_create_activation_info_with_session(mobileactivation_client_t client, plist_t handshake_result, plist_t *info);
+mobileactivation_error_t mobileactivation_create_activation_info_with_session(mobileactivation_client_t client, plist_t handshake_response, plist_t *info);
 
 /**
  * Activates the device with the given activation record.
@@ -164,16 +164,18 @@ mobileactivation_error_t mobileactivation_activate(mobileactivation_client_t cli
 
 /**
  * Activates the device with the given activation record in 'session' mode.
- * The activation record plist dictionary must be obtained using the
+ * The activation record plist must be obtained using the
  * activation protocol requesting from Apple's https webservice.
  *
  * @param client The mobileactivation client
- * @param activation_record The activation record plist dictionary
+ * @param activation_record The activation record in plist format
+ * @param headers A plist dictionary with the activation response headers
+ *     as returned from Apple's https webservice with the activation record
  *
  * @return MOBILEACTIVATION_E_SUCCESS on success, or an MOBILEACTIVATION_E_*
  *     error code otherwise.
  */
-mobileactivation_error_t mobileactivation_activate_with_session(mobileactivation_client_t client, plist_t activation_record);
+mobileactivation_error_t mobileactivation_activate_with_session(mobileactivation_client_t client, plist_t activation_record, plist_t headers);
 
 /**
  * Deactivates the device.
